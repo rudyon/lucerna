@@ -51,27 +51,46 @@ Instructions start with a 8-bit control byte, The upper 4 bits specify the opcod
 | value | name | operands                   | description           |
 | ----- | ---- | -------------------------- | --------------------- |
 | `0x0` | NOP  | none                       | no operation          |
-| `0x1` | ADD  | register, address/register | add                   |
+| `0x1` | HLT  | none                       | halt                  |
 | `0x2` | JMP  | address                    | jump                  |
-| `0x3` | HLT  | none                       | halt                  |
+| `0x3` | JMZ  | address                    | jump if zero          |
 | `0x4` | LDR  | register, address/register | load register         |
-| `0x5` | STR  | register, address/register | store register        |
-| `0x6` | WRT  | value, address/register    | write immediate       |
-| `0x7` | JMZ  | address                    | jump if zero          |
-| `0x8` | POP  | register                   | pop value from stack  |
-| `0x9` | PSH  | address/register           | push value onto stack |
+| `0x5` | STR  | address/register, register | store register        |
+| `0x6` | WRT  | address/register, value    | write immediate       |
+| `0x7` | POP  | register                   | pop value from stack  |
+| `0x8` | PSH  | address/register           | push value onto stack |
+| `0x9` | ADD  | register, address/register | add                   |
+| `0xA` | MUL  | register, address/register | multiply              |
+| `0xB` | SUB  | register, address/register | subtract              |
 
 #### operand formats
 
-| value | format             |
-| ----- | ------------------ |
-| `0x0` | none               |
-| `0x1` | register, register |
-| `0x2` | register, address  |
-| `0x3` | value, address     |
-| `0x4` | value, register    |
-| `0x5` | address            |
-| `0x6` | register           |
+| value | format             | encoding after control byte                            | operand bytes |
+| ----- | ------------------ | ------------------------------------------------------ | ------------- |
+| `0x0` | none               | nothing                                                | 0             |
+| `0x1` | register           | register index                                         | 1             |
+| `0x2` | register, register | register index, register index                         | 2             |
+| `0x3` | register, address  | register index, address low byte, address high byte    | 3             |
+| `0x4` | register, value    | register index, immediate value                        | 2             |
+| `0x5` | address            | address low byte, address high byte                    | 2             |
+| `0x6` | address, register  | address low byte, address high byte, register index    | 3             |
+| `0x7` | address, address   | first address, then second address; each little-endian | 4             |
+| `0x8` | address, value     | address low byte, address high byte, immediate value   | 3             |
+
+#### additional details
+
+For arithmetic operations:
+
+- `ADD dst, src` -> `dst = dst + src`
+- `MUL dst, src` -> `dst = dst * src`
+- `SUB dst, src` -> `dst = dst - src`
+
+The `src` can be a register or a byte read from memory. The result is stored in `dst`, which is always a register. The flags work as follows:
+
+| flag  | `ADD`           | `MUL`               | `SUB`          |
+| ----- | --------------- | ------------------- | -------------- |
+| zero  | result is zero  | result is zero      | result is zero |
+| carry | sum exceeds 255 | product exceeds 255 | borrow occurs  |
 
 ## deferred
 
