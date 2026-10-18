@@ -3,7 +3,7 @@
 ## components
 
 - **lux8** processor
-- Clock at 4 MHz to drive the **lux8** processor
+- Clock at 4 MHz to drive the lux8 processor
 - ROM chip capable of storing 4 KiBs
 - RAM chip capable of storing 60 KiBs
 
@@ -44,7 +44,7 @@ Single shared memory bus, with the ROM connected to the lower address range and 
 
 #### encoding
 
-Instructions start with a 8-bit control byte, The upper 4 bits specify the opcode and the lower 4 bits specify the operand format. The decoder uss the operand format to determine how many additonal bytes to fetch and how to interpret them.
+Instructions start with a 8-bit control byte, The upper 4 bits specify the opcode and the lower 4 bits specify the operand format. The decoder uses the operand format to determine how many additonal bytes to fetch and how to interpret them.
 
 #### opcodes
 
