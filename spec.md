@@ -1,4 +1,4 @@
-# stolas computer specification
+# lucerna computer specification
 
 ## components
 
