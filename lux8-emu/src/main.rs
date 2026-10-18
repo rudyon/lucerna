@@ -15,7 +15,7 @@ struct Lux8 {
     halted: bool,
 }
 
-/// An emulator for the stolas computer
+/// An emulator for the lucerna computer
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
