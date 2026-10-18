@@ -1,4 +1,4 @@
-# stolas
+# lucerna
 
 [specification](spec.md)
 
