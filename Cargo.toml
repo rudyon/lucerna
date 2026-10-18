@@ -1,0 +1,6 @@
+[workspace]
+members = [
+	"lux8-emu",
+	"lux8-asm",
+]
+resolver = "3"
