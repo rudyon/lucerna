@@ -1,3 +1,6 @@
+use clap::Parser;
+use std::path::PathBuf;
+
 const MEMORY_SIZE: usize = 65_536;
 const ROM_END: usize = 0x1000;
 
@@ -10,6 +13,14 @@ struct Lux8 {
     carry: bool,
     zero: bool,
     halted: bool,
+}
+
+/// An emulator for the stolas computer
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Binary file to load into ROM
+    rom: PathBuf,
 }
 
 impl Lux8 {
@@ -26,14 +37,16 @@ impl Lux8 {
         }
     }
 
-    fn load_program(&mut self, address: u16, program: &[u8]) -> Result<(), String> {
-        let start = address as usize;
-        let end = start
-            .checked_add(program.len())
-            .filter(|&end| end <= MEMORY_SIZE)
-            .ok_or("Program exceeds address space")?;
+    fn load_rom(&mut self, program: &[u8]) -> Result<(), String> {
+        if program.len() > ROM_END {
+            return Err(format!(
+                "ROM image is too large: {} bytes (maximum {} bytes)",
+                program.len(),
+                ROM_END
+            ));
+        }
 
-        self.memory[start..end].copy_from_slice(program);
+        self.memory[..program.len()].copy_from_slice(program);
         Ok(())
     }
 
@@ -98,8 +111,7 @@ impl Lux8 {
                     _ => return Err(format!("Invalid ADD format: {format:#X}")),
                 };
 
-                let result =
-                    self.registers[destination] as u16 + source as u16;
+                let result = self.registers[destination] as u16 + source as u16;
 
                 self.registers[destination] = result as u8;
                 self.carry = result > 0xFF;
@@ -247,26 +259,25 @@ impl Lux8 {
 }
 
 fn main() -> Result<(), String> {
+    let args = Args::parse();
+    let path = args.rom;
+
+    let rom = std::fs::read(&path)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+
     let mut cpu = Lux8::new();
+    cpu.load_rom(&rom)?;
 
-    // WRT 42, r0
-    // WRT 8, r1
-    // ADD r0, r1
-    // HLT
-    let program = [
-        0x64, 42, 0x00,
-        0x64, 8,  0x01,
-        0x11, 0x00, 0x01,
-        0x30,
-    ];
+    println!("Loaded {} bytes from {}", rom.len(), path.display());
 
-    cpu.load_program(0x0000, &program)?;
-    let steps = cpu.run(1_000)?;
+    let steps = cpu.run(1_000_000)?;
 
     println!("lux8 halted after {steps} instructions");
+
     for (index, value) in cpu.registers.iter().enumerate() {
         println!("r{index} = {value}");
     }
+
     println!("RIP = {:#06X}", cpu.rip);
     println!("RSP = {:#06X}", cpu.rsp);
     println!("Carry = {}", cpu.carry);
@@ -282,15 +293,12 @@ mod tests {
     #[test]
     fn executes_program_and_adds_registers() {
         let mut cpu = Lux8::new();
-        cpu.load_program(
-            0,
-            &[
-                0x64, 42, 0x00, // WRT 42, r0
-                0x64, 8, 0x01,  // WRT 8, r1
-                0x11, 0x00, 0x01, // ADD r0, r1
-                0x30,           // HLT
-            ],
-        )
+        cpu.load_rom(&[
+            0x64, 42, 0x00, // WRT 42, r0
+            0x64, 8, 0x01, // WRT 8, r1
+            0x11, 0x00, 0x01, // ADD r0, r1
+            0x30, // HLT
+        ])
         .unwrap();
 
         assert_eq!(cpu.run(100).unwrap(), 4);
@@ -304,7 +312,7 @@ mod tests {
         let mut cpu = Lux8::new();
         cpu.registers[0] = 255;
         cpu.registers[1] = 1;
-        cpu.load_program(0, &[0x11, 0x00, 0x01, 0x30]).unwrap();
+        cpu.load_rom(&[0x11, 0x00, 0x01, 0x30]).unwrap();
 
         cpu.step().unwrap();
 
@@ -316,7 +324,7 @@ mod tests {
     #[test]
     fn writes_to_ram() {
         let mut cpu = Lux8::new();
-        cpu.load_program(0, &[0x63, 42, 0x00, 0x20, 0x30]).unwrap();
+        cpu.load_rom(&[0x63, 42, 0x00, 0x20, 0x30]).unwrap();
 
         cpu.run(10).unwrap();
 
@@ -334,7 +342,7 @@ mod tests {
     fn pushes_and_pops_register_values() {
         let mut cpu = Lux8::new();
         cpu.registers[0] = 42;
-        cpu.load_program(0, &[0x96, 0x00, 0x86, 0x01, 0x30]).unwrap();
+        cpu.load_rom(&[0x96, 0x00, 0x86, 0x01, 0x30]).unwrap();
 
         cpu.run(10).unwrap();
 
@@ -345,7 +353,7 @@ mod tests {
     #[test]
     fn stops_infinite_loops_at_step_limit() {
         let mut cpu = Lux8::new();
-        cpu.load_program(0, &[0x25, 0x00, 0x00]).unwrap();
+        cpu.load_rom(&[0x25, 0x00, 0x00]).unwrap();
 
         assert!(cpu.run(10).is_err());
     }
