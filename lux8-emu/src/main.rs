@@ -1,12 +1,13 @@
 use clap::Parser;
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 #[cfg(unix)]
 mod terminal {
     use std::io;
     use std::os::fd::RawFd;
+    use std::process::{Command, Stdio};
 
     unsafe extern "C" {
         fn fcntl(fd: RawFd, command: i32, ...) -> i32;
@@ -15,6 +16,36 @@ mod terminal {
     const F_GETFL: i32 = 3;
     const F_SETFL: i32 = 4;
     const O_NONBLOCK: i32 = 0x800;
+
+    pub fn save_and_enable_raw() -> io::Result<String> {
+        let saved = Command::new("stty")
+            .arg("-g")
+            .stdin(Stdio::inherit())
+            .output()?;
+        if !saved.status.success() {
+            return Err(io::Error::other("stty -g failed"));
+        }
+        let state = String::from_utf8(saved.stdout)
+            .map_err(|_| io::Error::other("stty returned invalid settings"))?
+            .trim()
+            .to_owned();
+        let status = Command::new("stty")
+            .args(["raw", "-echo", "min", "0", "time", "0"])
+            .stdin(Stdio::inherit())
+            .status()?;
+        if !status.success() {
+            restore(&state);
+            return Err(io::Error::other("could not enable raw terminal input"));
+        }
+        Ok(state)
+    }
+
+    pub fn restore(state: &str) {
+        let _ = Command::new("stty")
+            .arg(state)
+            .stdin(Stdio::inherit())
+            .status();
+    }
 
     pub fn make_stdin_nonblocking() -> io::Result<i32> {
         // stdin is kept in its normal terminal mode; input becomes available
@@ -42,6 +73,8 @@ struct Console {
     host: bool,
     #[cfg(unix)]
     old_stdin_flags: Option<i32>,
+    #[cfg(unix)]
+    saved_terminal_state: Option<String>,
 }
 
 impl Console {
@@ -52,18 +85,38 @@ impl Console {
             host: false,
             #[cfg(unix)]
             old_stdin_flags: None,
+            #[cfg(unix)]
+            saved_terminal_state: None,
         }
     }
 
     fn host() -> io::Result<Self> {
         #[cfg(unix)]
-        let old_stdin_flags = Some(terminal::make_stdin_nonblocking()?);
+        let saved_terminal_state = if io::stdin().is_terminal() {
+            Some(terminal::save_and_enable_raw()?)
+        } else {
+            None
+        };
+
+        #[cfg(unix)]
+        let old_stdin_flags = match terminal::make_stdin_nonblocking() {
+            Ok(flags) => Some(flags),
+            Err(error) => {
+                if let Some(state) = &saved_terminal_state {
+                    terminal::restore(state);
+                }
+                return Err(error);
+            }
+        };
+
         Ok(Self {
             input: VecDeque::new(),
             output: Vec::new(),
             host: true,
             #[cfg(unix)]
             old_stdin_flags,
+            #[cfg(unix)]
+            saved_terminal_state,
         })
     }
 
@@ -114,6 +167,9 @@ impl Console {
 impl Drop for Console {
     fn drop(&mut self) {
         #[cfg(unix)]
+        if let Some(state) = &self.saved_terminal_state {
+            terminal::restore(state);
+        }
         if let Some(flags) = self.old_stdin_flags {
             terminal::restore_stdin(flags);
         }
