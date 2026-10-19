@@ -1,0 +1,12 @@
+; Tiny console echo loop.
+; Wait until console input is available, then echo one byte.
+
+poll:
+    DVI r0, 0x01, 0x02    ; read console status
+    WRT r1, 0              ; compare status with zero
+    SUB r0, r1
+    JMZ poll
+
+    DVI r0, 0x01, 0x00    ; read console input
+    DVO r0, 0x01, 0x01    ; write console output
+    JMP poll

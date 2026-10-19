@@ -1,5 +1,124 @@
 use clap::Parser;
+use std::collections::VecDeque;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
+
+#[cfg(unix)]
+mod terminal {
+    use std::io;
+    use std::os::fd::RawFd;
+
+    unsafe extern "C" {
+        fn fcntl(fd: RawFd, command: i32, ...) -> i32;
+    }
+
+    const F_GETFL: i32 = 3;
+    const F_SETFL: i32 = 4;
+    const O_NONBLOCK: i32 = 0x800;
+
+    pub fn make_stdin_nonblocking() -> io::Result<i32> {
+        // stdin is kept in its normal terminal mode; input becomes available
+        // after the user presses enter, without blocking the emulated CPU.
+        let flags = unsafe { fcntl(0, F_GETFL) };
+        if flags < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { fcntl(0, F_SETFL, flags | O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(flags)
+    }
+
+    pub fn restore_stdin(flags: i32) {
+        unsafe {
+            fcntl(0, F_SETFL, flags);
+        }
+    }
+}
+
+struct Console {
+    input: VecDeque<u8>,
+    output: Vec<u8>,
+    host: bool,
+    #[cfg(unix)]
+    old_stdin_flags: Option<i32>,
+}
+
+impl Console {
+    fn test() -> Self {
+        Self {
+            input: VecDeque::new(),
+            output: Vec::new(),
+            host: false,
+            #[cfg(unix)]
+            old_stdin_flags: None,
+        }
+    }
+
+    fn host() -> io::Result<Self> {
+        #[cfg(unix)]
+        let old_stdin_flags = Some(terminal::make_stdin_nonblocking()?);
+        Ok(Self {
+            input: VecDeque::new(),
+            output: Vec::new(),
+            host: true,
+            #[cfg(unix)]
+            old_stdin_flags,
+        })
+    }
+
+    fn poll_input(&mut self) {
+        if !self.host {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            let mut bytes = [0u8; 256];
+            loop {
+                match io::stdin().read(&mut bytes) {
+                    Ok(0) => break,
+                    Ok(count) => self.input.extend(&bytes[..count]),
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+
+    fn read(&mut self, device: u8, port: u8) -> u8 {
+        if device != 0x01 {
+            return 0;
+        }
+        self.poll_input();
+        match port {
+            0x00 => self.input.pop_front().unwrap_or(0),
+            0x02 => (!self.input.is_empty()) as u8,
+            _ => 0,
+        }
+    }
+
+    fn write(&mut self, device: u8, port: u8, value: u8) {
+        if device != 0x01 || port != 0x01 {
+            return;
+        }
+        if self.host {
+            let _ = io::stdout()
+                .write_all(&[value])
+                .and_then(|_| io::stdout().flush());
+        } else {
+            self.output.push(value);
+        }
+    }
+}
+
+impl Drop for Console {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(flags) = self.old_stdin_flags {
+            terminal::restore_stdin(flags);
+        }
+    }
+}
 
 const MEMORY_SIZE: usize = 65_536;
 const ROM_END: usize = 0x1000;
@@ -13,6 +132,7 @@ struct Lux8 {
     carry: bool,
     zero: bool,
     halted: bool,
+    console: Console,
 }
 
 /// An emulator for the lucerna computer
@@ -34,7 +154,14 @@ impl Lux8 {
             carry: false,
             zero: false,
             halted: false,
+            console: Console::test(),
         }
+    }
+
+    fn new_host() -> io::Result<Self> {
+        let mut cpu = Self::new();
+        cpu.console = Console::host()?;
+        Ok(cpu)
     }
 
     fn load_rom(&mut self, program: &[u8]) -> Result<(), String> {
@@ -215,6 +342,20 @@ impl Lux8 {
                 self.write_memory(self.rsp, value)?;
             }
 
+            // DVI/DVO register, device, port
+            0xC | 0xD if format == 0x9 => {
+                let id = self.fetch_byte();
+                let register = self.register(id)?;
+                let device = self.fetch_byte();
+                let port = self.fetch_byte();
+                if opcode == 0xC {
+                    self.registers[register] = self.console.read(device, port);
+                } else {
+                    let value = self.registers[register];
+                    self.console.write(device, port, value);
+                }
+            }
+
             // ADD, MUL, SUB: destination register, source register/address
             0x9 | 0xA | 0xB => {
                 let destination_id = self.fetch_byte();
@@ -281,14 +422,10 @@ impl Lux8 {
         Ok(())
     }
 
-    fn run(&mut self, max_steps: usize) -> Result<usize, String> {
+    fn run(&mut self) -> Result<usize, String> {
         let mut steps = 0;
 
         while !self.halted {
-            if steps >= max_steps {
-                return Err(format!("Execution limit reached: {max_steps} steps"));
-            }
-
             self.step()?;
             steps += 1;
         }
@@ -304,12 +441,13 @@ fn main() -> Result<(), String> {
     let rom = std::fs::read(&path)
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
 
-    let mut cpu = Lux8::new();
+    let mut cpu =
+        Lux8::new_host().map_err(|error| format!("Could not open host console: {error}"))?;
     cpu.load_rom(&rom)?;
 
     println!("Loaded {} bytes from {}", rom.len(), path.display());
 
-    let steps = cpu.run(1_000_000)?;
+    let steps = cpu.run()?;
 
     println!("lux8 halted after {steps} instructions");
 
@@ -341,7 +479,7 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(cpu.run(100).unwrap(), 4);
+        assert_eq!(cpu.run().unwrap(), 4);
         assert_eq!(cpu.registers[0], 50);
         assert_eq!(cpu.registers[1], 8);
         assert!(cpu.halted);
@@ -361,7 +499,7 @@ mod tests {
         ])
         .unwrap();
 
-        cpu.run(100).unwrap();
+        cpu.run().unwrap();
 
         assert_eq!(cpu.registers[1], 42);
         assert_eq!(cpu.registers[2], 42);
@@ -378,7 +516,7 @@ mod tests {
         ])
         .unwrap();
 
-        cpu.run(10).unwrap();
+        cpu.run().unwrap();
         assert_eq!(cpu.memory[0x2000], 42);
     }
 
@@ -464,10 +602,32 @@ mod tests {
         ])
         .unwrap();
 
-        cpu.run(10).unwrap();
+        cpu.run().unwrap();
 
         assert_eq!(cpu.registers[1], 42);
         assert_eq!(cpu.rsp, 0xFFFF);
+    }
+
+    #[test]
+    fn device_io_uses_console_ports() {
+        let mut cpu = Lux8::new();
+        cpu.console.input.push_back(b'X');
+        cpu.load_rom(&[
+            0xC9, 0x00, 0x01, 0x02, // DVI r0, console, status
+            0xC9, 0x01, 0x01, 0x00, // DVI r1, console, input
+            0xD9, 0x01, 0x01, 0x01, // DVO r1, console, output
+            0x10,
+        ])
+        .unwrap();
+        cpu.run().unwrap();
+        assert_eq!(cpu.registers[0], 1);
+        assert_eq!(cpu.registers[1], b'X');
+        assert_eq!(cpu.console.output, vec![b'X']);
+
+        let mut cpu = Lux8::new();
+        cpu.load_rom(&[0xC9, 0x00, 0x02, 0x00]).unwrap(); // reserved device
+        cpu.step().unwrap();
+        assert_eq!(cpu.registers[0], 0);
     }
 
     #[test]
@@ -480,14 +640,5 @@ mod tests {
         let mut cpu = Lux8::new();
         cpu.load_rom(&[0x94, 0x00, 42]).unwrap(); // Invalid ADD format
         assert!(cpu.step().is_err());
-    }
-
-    #[test]
-    fn stops_infinite_loops_at_step_limit() {
-        let mut cpu = Lux8::new();
-
-        cpu.load_rom(&[0x25, 0x00, 0x00]).unwrap(); // JMP 0x0000
-
-        assert!(cpu.run(10).is_err());
     }
 }

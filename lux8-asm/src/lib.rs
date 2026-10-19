@@ -250,6 +250,15 @@ fn instruction_size(
                 Ok(4)
             }
         }
+        "DVI" | "DVO" => {
+            expect_count(statement, 3)?;
+            parse_register(&args[0], statement.line)?;
+            let device = parse_number(&args[1], statement.line)?;
+            let port = parse_number(&args[2], statement.line)?;
+            check_byte(device, statement.line, "device address")?;
+            check_byte(port, statement.line, "port address")?;
+            Ok(4)
+        }
         _ => Err(error(
             statement.line,
             format!("unknown instruction '{}'", statement.instruction),
@@ -341,6 +350,19 @@ fn encode(
                 word(address(&a[1])?, output);
             }
         }
+        "DVI" | "DVO" => {
+            let opcode = if statement.instruction == "DVI" {
+                0xC0
+            } else {
+                0xD0
+            };
+            output.extend([
+                opcode | 0x09,
+                parse_register(&a[0], line)?,
+                parse_number(&a[1], line)? as u8,
+                parse_number(&a[2], line)? as u8,
+            ]);
+        }
         _ => unreachable!(),
     }
     Ok(())
@@ -352,7 +374,7 @@ mod tests {
 
     #[test]
     fn encodes_every_instruction_form() {
-        let source = "NOP\nHLT\nJMP 0x1234\nJMZ 7\nLDR r1, r2\nLDR r1, 0x2000\nSTR r1, r2\nSTR 0x2000, r2\nWRT r1, 255\nWRT 0x2000, 42\nPOP r3\nPSH r3\nPSH 0x2000\nADD r0, r1\nADD r0, 0x2000\nMUL r0, r1\nSUB r0, 0x2000\n";
+        let source = "NOP\nHLT\nJMP 0x1234\nJMZ 7\nLDR r1, r2\nLDR r1, 0x2000\nSTR r1, r2\nSTR 0x2000, r2\nWRT r1, 255\nWRT 0x2000, 42\nPOP r3\nPSH r3\nPSH 0x2000\nADD r0, r1\nADD r0, 0x2000\nMUL r0, r1\nSUB r0, 0x2000\nDVI r0, 1, 0\nDVO r0, 1, 1\n";
         let image = assemble(source).unwrap();
         assert_eq!(&image[0..8], &[0x00, 0x10, 0x25, 0x34, 0x12, 0x35, 7, 0]);
         assert!(image.windows(3).any(|x| x == [0x42, 1, 2]));
@@ -361,6 +383,8 @@ mod tests {
         assert!(image.windows(4).any(|x| x == [0x68, 0, 0x20, 42]));
         assert!(image.windows(3).any(|x| x == [0x92, 0, 1]));
         assert!(image.windows(4).any(|x| x == [0x93, 0, 0, 0x20]));
+        assert!(image.windows(4).any(|x| x == [0xC9, 0, 1, 0]));
+        assert!(image.windows(4).any(|x| x == [0xD9, 0, 1, 1]));
     }
 
     #[test]
@@ -375,6 +399,7 @@ mod tests {
             "WHAT",
             "LDR r8, r0",
             "WRT r0, 256",
+            "DVI r0, 1, 256",
             "JMP missing",
             "start: NOP\nstart: HLT",
         ] {
