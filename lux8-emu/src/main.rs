@@ -93,29 +93,9 @@ impl Lux8 {
             // NOP
             0x0 if format == 0x0 => {}
 
-            // ADD destination, source
-            0x1 => {
-                let destination_id = self.fetch_byte();
-                let destination = self.register(destination_id)?;
-
-                let source = match format {
-                    0x1 => {
-                        let id = self.fetch_byte();
-                        self.register(id)?;
-                        self.registers[id as usize]
-                    }
-                    0x2 => {
-                        let address = self.fetch_word();
-                        self.memory[address as usize]
-                    }
-                    _ => return Err(format!("Invalid ADD format: {format:#X}")),
-                };
-
-                let result = self.registers[destination] as u16 + source as u16;
-
-                self.registers[destination] = result as u8;
-                self.carry = result > 0xFF;
-                self.zero = self.registers[destination] == 0;
+            // HLT
+            0x1 if format == 0x0 => {
+                self.halted = true;
             }
 
             // JMP address
@@ -123,76 +103,8 @@ impl Lux8 {
                 self.rip = self.fetch_word();
             }
 
-            // HLT
-            0x3 if format == 0x0 => {
-                self.halted = true;
-            }
-
-            // LDR destination, source
-            0x4 => {
-                let destination_id = self.fetch_byte();
-                let destination = self.register(destination_id)?;
-
-                let value = match format {
-                    0x1 => {
-                        let id = self.fetch_byte();
-                        self.register(id)?;
-                        self.registers[id as usize]
-                    }
-                    0x2 => {
-                        let address = self.fetch_word();
-                        self.memory[address as usize]
-                    }
-                    _ => return Err(format!("Invalid LDR format: {format:#X}")),
-                };
-
-                self.registers[destination] = value;
-            }
-
-            // STR source, destination
-            0x5 => {
-                let source_id = self.fetch_byte();
-                let source = self.register(source_id)?;
-                let value = self.registers[source];
-
-                match format {
-                    // Copy source register into destination register.
-                    0x1 => {
-                        let destination = self.fetch_byte();
-                        let destination = self.register(destination)?;
-                        self.registers[destination] = value;
-                    }
-                    // Write source register to memory.
-                    0x2 => {
-                        let address = self.fetch_word();
-                        self.write_memory(address, value)?;
-                    }
-                    _ => return Err(format!("Invalid STR format: {format:#X}")),
-                }
-            }
-
-            // WRT immediate, destination
-            0x6 => {
-                let value = self.fetch_byte();
-
-                match format {
-                    // WRT value, address
-                    0x3 => {
-                        let address = self.fetch_word();
-                        self.write_memory(address, value)?;
-                    }
-                    // WRT value, register
-                    0x4 => {
-                        let id = self.fetch_byte();
-                        let destination = self.register(id)?;
-                        self.registers[destination] = value;
-                    }
-                    _ => return Err(format!("Invalid WRT format: {format:#X}")),
-                }
-            }
-
             // JMZ address
-            0x7 if format == 0x5 => {
+            0x3 if format == 0x5 => {
                 let address = self.fetch_word();
 
                 if self.zero {
@@ -200,8 +112,79 @@ impl Lux8 {
                 }
             }
 
+            // LDR destination, source
+            0x4 => match format {
+                // LDR register, register
+                0x2 => {
+                    let destination_id = self.fetch_byte();
+                    let destination = self.register(destination_id)?;
+                    let source_id = self.fetch_byte();
+                    let source = self.register(source_id)?;
+
+                    self.registers[destination] = self.registers[source];
+                }
+
+                // LDR register, address
+                0x3 => {
+                    let destination_id = self.fetch_byte();
+                    let destination = self.register(destination_id)?;
+                    let address = self.fetch_word();
+
+                    self.registers[destination] = self.memory[address as usize];
+                }
+
+                _ => return Err(format!("Invalid LDR format: {format:#X}")),
+            },
+
+            // STR destination, source
+            0x5 => match format {
+                // STR destination-register, source-register
+                0x2 => {
+                    let destination_id = self.fetch_byte();
+                    let destination = self.register(destination_id)?;
+                    let source_id = self.fetch_byte();
+                    let source = self.register(source_id)?;
+
+                    self.registers[destination] = self.registers[source];
+                }
+
+                // STR address, source-register
+                0x6 => {
+                    let address = self.fetch_word();
+                    let source_id = self.fetch_byte();
+                    let source = self.register(source_id)?;
+                    let value = self.registers[source];
+
+                    self.write_memory(address, value)?;
+                }
+
+                _ => return Err(format!("Invalid STR format: {format:#X}")),
+            },
+
+            // WRT destination, immediate-value
+            0x6 => match format {
+                // WRT register, value
+                0x4 => {
+                    let destination_id = self.fetch_byte();
+                    let destination = self.register(destination_id)?;
+                    let value = self.fetch_byte();
+
+                    self.registers[destination] = value;
+                }
+
+                // WRT address, value
+                0x8 => {
+                    let address = self.fetch_word();
+                    let value = self.fetch_byte();
+
+                    self.write_memory(address, value)?;
+                }
+
+                _ => return Err(format!("Invalid WRT format: {format:#X}")),
+            },
+
             // POP register
-            0x8 if format == 0x6 => {
+            0x7 if format == 0x1 => {
                 let id = self.fetch_byte();
                 let destination = self.register(id)?;
 
@@ -212,22 +195,78 @@ impl Lux8 {
             }
 
             // PSH register or memory address
-            0x9 => {
+            0x8 => {
                 let value = match format {
-                    0x5 => {
-                        let address = self.fetch_word();
-                        self.memory[address as usize]
-                    }
-                    0x6 => {
+                    0x1 => {
                         let id = self.fetch_byte();
                         let source = self.register(id)?;
                         self.registers[source]
                     }
+
+                    0x5 => {
+                        let address = self.fetch_word();
+                        self.memory[address as usize]
+                    }
+
                     _ => return Err(format!("Invalid PSH format: {format:#X}")),
                 };
 
                 self.rsp = self.rsp.wrapping_sub(1);
                 self.write_memory(self.rsp, value)?;
+            }
+
+            // ADD, MUL, SUB: destination register, source register/address
+            0x9 | 0xA | 0xB => {
+                let destination_id = self.fetch_byte();
+                let destination = self.register(destination_id)?;
+
+                let source = match format {
+                    // Register source
+                    0x2 => {
+                        let source_id = self.fetch_byte();
+                        let source = self.register(source_id)?;
+                        self.registers[source]
+                    }
+
+                    // Memory source
+                    0x3 => {
+                        let address = self.fetch_word();
+                        self.memory[address as usize]
+                    }
+
+                    _ => {
+                        return Err(format!("Invalid arithmetic format: {format:#X}"));
+                    }
+                };
+
+                let left = self.registers[destination];
+
+                let result = match opcode {
+                    // ADD
+                    0x9 => {
+                        let sum = left as u16 + source as u16;
+                        self.carry = sum > 0xFF;
+                        sum as u8
+                    }
+
+                    // MUL
+                    0xA => {
+                        let product = left as u16 * source as u16;
+                        self.carry = product > 0xFF;
+                        product as u8
+                    }
+
+                    // SUB
+                    0xB => {
+                        self.carry = left < source;
+                        left.wrapping_sub(source)
+                    }
+
+                    _ => unreachable!(),
+                };
+
+                self.registers[destination] = result;
+                self.zero = result == 0;
             }
 
             _ => {
@@ -293,11 +332,12 @@ mod tests {
     #[test]
     fn executes_program_and_adds_registers() {
         let mut cpu = Lux8::new();
+
         cpu.load_rom(&[
-            0x64, 42, 0x00, // WRT 42, r0
-            0x64, 8, 0x01, // WRT 8, r1
-            0x11, 0x00, 0x01, // ADD r0, r1
-            0x30, // HLT
+            0x64, 0x00, 42, // WRT r0, 42
+            0x64, 0x01, 8, // WRT r1, 8
+            0x92, 0x00, 0x01, // ADD r0, r1
+            0x10, // HLT
         ])
         .unwrap();
 
@@ -308,12 +348,55 @@ mod tests {
     }
 
     #[test]
-    fn addition_sets_carry_and_zero_flags() {
+    fn loads_and_stores_registers_and_memory() {
+        let mut cpu = Lux8::new();
+        cpu.memory[0x2000] = 42;
+
+        cpu.load_rom(&[
+            0x64, 0x00, 42, // WRT r0, 42
+            0x52, 0x01, 0x00, // STR r1, r0
+            0x43, 0x02, 0x00, 0x20, // LDR r2, 0x2000
+            0x56, 0x00, 0x20, 0x02, // STR 0x2000, r2
+            0x10, // HLT
+        ])
+        .unwrap();
+
+        cpu.run(100).unwrap();
+
+        assert_eq!(cpu.registers[1], 42);
+        assert_eq!(cpu.registers[2], 42);
+        assert_eq!(cpu.memory[0x2000], 42);
+    }
+
+    #[test]
+    fn writes_immediate_values_to_ram() {
+        let mut cpu = Lux8::new();
+
+        cpu.load_rom(&[
+            0x68, 0x00, 0x20, 42,   // WRT 0x2000, 42
+            0x10, // HLT
+        ])
+        .unwrap();
+
+        cpu.run(10).unwrap();
+        assert_eq!(cpu.memory[0x2000], 42);
+    }
+
+    #[test]
+    fn rejects_writes_to_rom() {
+        let mut cpu = Lux8::new();
+
+        assert!(cpu.write_memory(0x0000, 42).is_err());
+        assert_eq!(cpu.memory[0x0000], 0);
+    }
+
+    #[test]
+    fn addition_sets_carry_and_zero() {
         let mut cpu = Lux8::new();
         cpu.registers[0] = 255;
         cpu.registers[1] = 1;
-        cpu.load_rom(&[0x11, 0x00, 0x01, 0x30]).unwrap();
 
+        cpu.load_rom(&[0x92, 0x00, 0x01]).unwrap();
         cpu.step().unwrap();
 
         assert_eq!(cpu.registers[0], 0);
@@ -322,27 +405,64 @@ mod tests {
     }
 
     #[test]
-    fn writes_to_ram() {
+    fn multiplication_sets_carry() {
         let mut cpu = Lux8::new();
-        cpu.load_rom(&[0x63, 42, 0x00, 0x20, 0x30]).unwrap();
+        cpu.registers[0] = 20;
+        cpu.registers[1] = 20;
 
-        cpu.run(10).unwrap();
+        cpu.load_rom(&[0xA2, 0x00, 0x01]).unwrap();
+        cpu.step().unwrap();
 
-        assert_eq!(cpu.memory[0x2000], 42);
+        assert_eq!(cpu.registers[0], 144);
+        assert!(cpu.carry);
+        assert!(!cpu.zero);
     }
 
     #[test]
-    fn rejects_cpu_writes_to_rom() {
+    fn subtraction_sets_borrow_and_zero() {
         let mut cpu = Lux8::new();
-        assert!(cpu.write_memory(0x0000, 42).is_err());
-        assert_eq!(cpu.memory[0x0000], 0);
+        cpu.registers[0] = 2;
+        cpu.registers[1] = 3;
+
+        cpu.load_rom(&[0xB2, 0x00, 0x01]).unwrap();
+        cpu.step().unwrap();
+
+        assert_eq!(cpu.registers[0], 255);
+        assert!(cpu.carry);
+        assert!(!cpu.zero);
+    }
+
+    #[test]
+    fn conditional_jump_uses_zero_flag() {
+        let mut cpu = Lux8::new();
+        cpu.zero = true;
+
+        cpu.load_rom(&[
+            0x35, 0x05, 0x00, // JMZ 0x0005
+            0x10, // HLT (skipped)
+            0x00, // NOP
+            0x10, // HLT at 0x0005
+        ])
+        .unwrap();
+
+        cpu.step().unwrap();
+        assert_eq!(cpu.rip, 0x0005);
+
+        cpu.step().unwrap();
+        assert!(cpu.halted);
     }
 
     #[test]
     fn pushes_and_pops_register_values() {
         let mut cpu = Lux8::new();
         cpu.registers[0] = 42;
-        cpu.load_rom(&[0x96, 0x00, 0x86, 0x01, 0x30]).unwrap();
+
+        cpu.load_rom(&[
+            0x81, 0x00, // PSH r0
+            0x71, 0x01, // POP r1
+            0x10, // HLT
+        ])
+        .unwrap();
 
         cpu.run(10).unwrap();
 
@@ -351,9 +471,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_registers_and_formats() {
+        let mut cpu = Lux8::new();
+
+        cpu.load_rom(&[0x42, 0x08, 0x00]).unwrap(); // LDR r8, r0
+        assert!(cpu.step().is_err());
+
+        let mut cpu = Lux8::new();
+        cpu.load_rom(&[0x94, 0x00, 42]).unwrap(); // Invalid ADD format
+        assert!(cpu.step().is_err());
+    }
+
+    #[test]
     fn stops_infinite_loops_at_step_limit() {
         let mut cpu = Lux8::new();
-        cpu.load_rom(&[0x25, 0x00, 0x00]).unwrap();
+
+        cpu.load_rom(&[0x25, 0x00, 0x00]).unwrap(); // JMP 0x0000
 
         assert!(cpu.run(10).is_err());
     }
